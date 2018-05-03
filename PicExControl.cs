@@ -1,7 +1,14 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows.Forms;
+
 
 namespace MyControl
 {
@@ -13,43 +20,92 @@ namespace MyControl
         public PicExControl()
         {
             InitializeComponent();
-            _fineTuningRect = new FineTuningRect {FatherControl = this};
+            _fineTuningRect = new FineTuningRect { FatherControl = this };
+            RectColor = Color.Red;
+            AllawDraw = false;
+            IsFirstZoom = true;
             SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
         }
 
         #region 字段和事件
         public delegate void MouseWheelDraw(object sender, MouseEventArgs e);  //显示树
         public event MouseWheelDraw MouseWheelDrawEvent;
-        public delegate void AfterDraw(bool isMove,bool isRight);
+        public delegate void AfterDraw(bool isMove, bool isRight);
         public event AfterDraw AfterDrawEvent;
         public delegate void Recognize(Bitmap image);
         public static event Recognize RecognizeEvent;
 
-
-        private Image _image; //原图
         private FineTuningRect _fineTuningRect;
+        private Image _image; //原图
         private PosSizableRect _nodeSelected = PosSizableRect.None;
         private TreatmentType _treatmentType = TreatmentType.Zoom;
         private TreatmentType _lasttreatmentType = TreatmentType.None;
-        private Rectangle _imageRect;
-        private PointF _luPonit = new PointF(0,0);
-        private PointF _rbPonit = new PointF(0,0);
+        // zoom
         private PointF _startPoint = new PointF(0, 0);
+        public float Hrate = 1;     //竖向缩放比
+        public float Wrate = 1;    //横向缩放比
+
+        private bool _showSupLine;
+        public bool ShowSupLine
+        {
+            get => _showSupLine;
+            set
+            {
+                _showSupLine = value;
+                Invalidate();
+            } 
+        }
+
+        public Color SupLineColor { get; set; } = Color.Red;
+                                   // drawRect
+        private Rectangle _imageRect;
+        private PointF _luPonit = new PointF(0, 0);           // left , up
+        private PointF _rbPonit = new PointF(0, 0);           // right, bottom 
         private PointF _mouseDownPoint = new PointF(0, 0);
-        private bool _allawDraw;
+        private PointF _mouseMovePoint = new PointF(0, 0);
         private bool _mIsClick;
         private bool _isMouseMove;
         private int _i;
-        public float Hrate = 1;     //竖向缩放比
-        public float Wrate = 1;    //横向缩放比
-        private Color _rectColor = Color.Red;
-        private bool _isFirstZoom = true;
+
+        private List<PointF> _polygons = new List<PointF>();
+        private PointF _drwaingPoint = new PointF(0, 0);
+        private Color _polygonColor = Color.Pink;
+        private int _circleRadius = 5;
+        private int _selectedCircleIndex = -1;
+        private int _onLineIndex1 = -1;
         #endregion
 
         #region 属性 
 
         public bool IsFineTuring   // 是否是微调状态
             => _nodeSelected != PosSizableRect.None;
+
+        public bool IsDrawPolygon   // 是否是微调状态
+        => _treatmentType == TreatmentType.DrawPolygon;
+
+        public List<int[]> DrawPointList
+        {
+            get
+            {
+                List<int[]> points = new List<int[]>();
+                foreach (var point in _polygons)
+                {
+                    points.Add(new int[] { (int)((point.X - _startPoint.X) / Wrate), (int)((point.Y - _startPoint.Y) / Hrate) });
+                }
+                return points;
+            }
+            set
+            {
+                if (value == null)
+                { _polygons = new List<PointF>();
+                    return;
+                }
+                foreach (var point in value)
+                {
+                    _polygons.Add(new PointF(point[0] * Wrate + _startPoint.X, point[1] * Hrate + _startPoint.Y));
+                }
+            }
+        }
 
         public Rectangle ImageRect  //基于原图的框
         {
@@ -60,14 +116,14 @@ namespace MyControl
                 int width = (int)Math.Round((_rbPonit.X - _luPonit.X) / Wrate);
                 int height = (int)Math.Round((_rbPonit.Y - _luPonit.Y) / Wrate);
                 Rectangle rect = new Rectangle(x, y, width, height);
-                Rectangle imageRect = new Rectangle(0, 0, _image == null ? 0 : _image.Width, _image == null ? 0 : _image.Height);
+                Rectangle imageRect = new Rectangle(0, 0, _image?.Width ?? 0, _image?.Height ?? 0);
                 _imageRect = Rectangle.Intersect(rect, imageRect);
                 if (_imageRect != rect)
                 {
-                    _luPonit.X = (int)(_imageRect.X * Wrate + _startPoint.X);
-                    _luPonit.Y = (int)(_imageRect.Y * Hrate + _startPoint.Y);
-                    _rbPonit.X = (int)(_imageRect.Width * Wrate + _luPonit.X);
-                    _rbPonit.Y = (int)(_imageRect.Height * Hrate + _luPonit.Y);
+                    _luPonit.X = _imageRect.X * Wrate + _startPoint.X;
+                    _luPonit.Y = _imageRect.Y * Hrate + _startPoint.Y;
+                    _rbPonit.X = _imageRect.Width * Wrate + _luPonit.X;
+                    _rbPonit.Y = _imageRect.Height * Hrate + _luPonit.Y;
                 }
                 return _imageRect;
             }
@@ -75,10 +131,11 @@ namespace MyControl
             {
                 if (_imageRect != value)
                 {
-                    _luPonit.X = (int) (value.X*Wrate + _startPoint.X);
-                    _luPonit.Y = (int) (value.Y*Hrate + _startPoint.Y);
-                    _rbPonit.X = (int) (value.Width*Wrate + _luPonit.X);
-                    _rbPonit.Y = (int) (value.Height*Hrate + _luPonit.Y);
+                    _luPonit.X = value.X * Wrate + _startPoint.X;
+                    _luPonit.Y = value.Y * Hrate + _startPoint.Y;
+                    _rbPonit.X = value.Width * Wrate + _luPonit.X;
+                    _rbPonit.Y = value.Height * Hrate + _luPonit.Y;
+                    _imageRect = value;
                 }
                 Invalidate();
             }
@@ -86,44 +143,25 @@ namespace MyControl
         /// <summary>
         /// 是否保持图片比例不变
         /// </summary>
-        public bool BIsStretch
-        {
-            get;
-            set;
-        }
+        public bool BIsStretch { get; set; }
 
-        public bool IsFirstZoom   // 是否是微调状态
-        {
-            get { return _isFirstZoom; }
-            set { _isFirstZoom = value; }
-        }
+        [DefaultValue(typeof(bool),"true")]
+        public bool IsFirstZoom { get; set; }   // 是否在开始的查看是缩放状态
         /// <summary>
         /// 允许画框
         /// </summary>
-        public bool AllawDraw
-        {
-            get
-            {
-                return _allawDraw;
-            }
+        private bool _allawDraw = true;
+        public bool AllawDraw {
+            get { return _allawDraw; }
             set
             {
-                _treatmentType = _allawDraw ? TreatmentType.Draw : TreatmentType.Zoom;
                 _allawDraw = value;
+                _treatmentType = _allawDraw ? TreatmentType.DrawRect : TreatmentType.Zoom;
             }
         }
 
-        public Color RectColor
-        {
-            get
-            {
-                return _rectColor;
-            }
-            set
-            {
-                _rectColor = value;
-            }
-        }
+        [DefaultValue(typeof(Color), "Red")]
+        public Color RectColor { get; set; }
         #endregion
 
         #region 重写
@@ -142,7 +180,61 @@ namespace MyControl
                         int width = (int)Math.Round(_image.Width * Wrate);
                         int height = (int)Math.Round(_image.Height * Hrate);
                         g.DrawImage(imageToDraw, new Rectangle((int)Math.Round(_startPoint.X), (int)Math.Round(_startPoint.Y), width, height));
-                        g.DrawRectangle(new Pen(_rectColor,1),_fineTuningRect.GetRectByF(new RectangleF(_luPonit.X,_luPonit.Y,(_rbPonit.X - _luPonit.X),(_rbPonit.Y - _luPonit.Y))));
+                        g.DrawRectangle(new Pen(RectColor,1),_fineTuningRect.GetRectByF(new RectangleF(_luPonit.X,_luPonit.Y,(_rbPonit.X - _luPonit.X),(_rbPonit.Y - _luPonit.Y))));
+                        g.DrawString(_treatmentType.ToString(), DefaultFont, Brushes.Black, 0, 0);
+                        if (_polygons.Count > 0)
+                        {
+                            for (int j = 0; j < _polygons.Count; j++)
+                            {
+                                g.DrawEllipse(new Pen(_polygonColor, 1), _polygons[j].X - _circleRadius, _polygons[j].Y - _circleRadius, _circleRadius * 2, _circleRadius * 2);
+                                if (j < _polygons.Count - 1)
+                                    g.DrawLine(new Pen(_polygonColor, 2), _polygons[j], _polygons[j + 1]); //画线
+                            }
+                            g.DrawLine(new Pen(_polygonColor, 1), _polygons[0], _polygons[_polygons.Count - 1]);
+                        }
+                        if (ShowSupLine)
+                        {
+                            if (_treatmentType == TreatmentType.FineTuring && _mIsClick)
+                            {
+                                switch (_nodeSelected)
+                                {
+                                    case PosSizableRect.UpMiddle:
+                                    case PosSizableRect.TopIn:
+                                        DrawSupLine(new PointF(_mouseMovePoint.X, _luPonit.Y), g);
+                                        break;
+                                    case PosSizableRect.BottomMiddle:
+                                    case PosSizableRect.ButtonIn:
+                                        DrawSupLine(new PointF(_mouseMovePoint.X, _rbPonit.Y), g);
+                                        break;
+                                    case PosSizableRect.LeftMiddle:
+                                        DrawSupLine(new PointF(_luPonit.X, _mouseMovePoint.Y), g);
+                                        break;
+                                    case PosSizableRect.LeftBottom:
+                                        DrawSupLine(new PointF(_luPonit.X, _rbPonit.Y), g);
+                                        break;
+                                    case PosSizableRect.LeftUp:
+                                        DrawSupLine(_luPonit, g);
+                                        break;
+                                    case PosSizableRect.RightUp:
+                                        DrawSupLine(new PointF(_rbPonit.X, _luPonit.Y), g);
+                                        break;
+                                    case PosSizableRect.RightMiddle:
+                                        DrawSupLine(new PointF(_rbPonit.X, _mouseMovePoint.Y), g);
+                                        break;
+                                    case PosSizableRect.RightBottom:
+                                        DrawSupLine(_rbPonit, g);
+                                        break;
+                                    case PosSizableRect.None:
+                                        DrawSupLine(_mouseMovePoint, g);
+                                        break;
+                                }
+
+                            }
+                            else
+                            {
+                                DrawSupLine(_mouseMovePoint, g);
+                            }
+                        }
                     }
                 }
             }
@@ -154,11 +246,27 @@ namespace MyControl
 
         protected override void OnKeyDown(KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.ControlKey && _i == 0)
+            if (e.KeyValue == 17 && _i == 0)
             {
                 _lasttreatmentType = _treatmentType;
-                SetZoom();
+                  _treatmentType = TreatmentType.Zoom;
+                Invalidate();
                 _i++;
+            }
+            if (e.KeyValue == 18 && _i == 0)
+            {
+                _lasttreatmentType = _treatmentType;
+                _treatmentType = TreatmentType.DrawPolygon;
+                Invalidate();
+                _i++;
+            }
+            if (e.Alt && e.KeyCode == Keys.D)
+            {
+                _polygons.Clear();
+                _selectedCircleIndex = -1;
+                _onLineIndex1 = -1;
+                _drwaingPoint = new PointF(0, 0);
+                Invalidate();
             }
             if (e.Control && e.KeyCode == Keys.R)
             {
@@ -169,11 +277,14 @@ namespace MyControl
 
         protected override void OnKeyUp(KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.ControlKey)
+            if (e.KeyValue == 17 || e.KeyValue == 18)
             {
                 _i = 0;
                 if (_lasttreatmentType != TreatmentType.None)
+                {
                     _treatmentType = _lasttreatmentType;
+                    Invalidate();
+                }
             }
             base.OnKeyUp(e);
         }
@@ -181,7 +292,6 @@ namespace MyControl
         protected override void OnMouseDown(MouseEventArgs e)
         {
             _isMouseMove = false;
-            
             _mouseDownPoint = new Point(e.X, e.Y);
             if (_image == null) return;//图片不为空
             if (e.X < _startPoint.X ||           // left
@@ -191,49 +301,105 @@ namespace MyControl
                 return; //且鼠标在图片内
             _nodeSelected = _fineTuningRect.GetNodeSelectable(new Point(e.X, e.Y), _luPonit, _rbPonit);
 
-            if (e.Button == MouseButtons.Left) 
+            if (e.Button == MouseButtons.Left)
+            {
                 _mIsClick = true;
+                if (_treatmentType == TreatmentType.DrawPolygon)
+                {
+                    _selectedCircleIndex = GetSelectedCircleIndexFromPolygon(_mouseDownPoint);
+                    if (_selectedCircleIndex == -1)
+                    {
+                        _onLineIndex1 = -1;
+                        _drwaingPoint =  new PointF(e.X, e.Y);
+                        if(_polygons.Count > 1)
+                        for (int i = 0; i < _polygons.Count ; i++)
+                        {
+                            if (CheckPointInLine(new PointF(e.X, e.Y), _polygons[i], _polygons[i == _polygons.Count -1 ? 0 : i + 1]))
+                            {
+                                _onLineIndex1 = i;
+                                _drwaingPoint = new PointF(0, 0);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         protected override void OnMouseUp(MouseEventArgs e)
         {
-            if (_treatmentType != TreatmentType.Zoom)
-                if (AfterDrawEvent != null)
-                    AfterDrawEvent(_isMouseMove, e.Button == MouseButtons.Right);
+            if (_treatmentType == TreatmentType.FineTuring || _treatmentType == TreatmentType.DrawRect)
+                AfterDrawEvent?.Invoke(_isMouseMove, e.Button == MouseButtons.Right);
+            if (_treatmentType == TreatmentType.DrawPolygon)
+            {
+                if (_selectedCircleIndex != -1)
+                {
+                    PointF point = new PointF(e.X, e.Y);
+                    if (GetDistance(_polygons[_selectedCircleIndex], new PointF(e.X, e.Y)) > _circleRadius)
+                    {
+                        if (CheckPointInLine(point, _polygons[_selectedCircleIndex == 0 ? _polygons.Count - 1 : _selectedCircleIndex - 1], _polygons[_selectedCircleIndex == _polygons.Count - 1 ? 0 : _selectedCircleIndex + 1]))
+                            _polygons.RemoveAt(_selectedCircleIndex);
+                        else
+                            _polygons[_selectedCircleIndex] = point;
+                    }
+                }
+                else
+                {
+                    if (_onLineIndex1 == -1)
+                        _polygons.Add(_drwaingPoint);
+                    else
+                        _polygons.Insert(_onLineIndex1 + 1, new PointF(e.X, e.Y));
+                }
+                AfterDrawEvent?.Invoke(_isMouseMove, e.Button == MouseButtons.Right);
+                Invalidate();
+            }
             _mIsClick = false;
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
         {
-            _isMouseMove = true;
-
+            _mouseMovePoint.X = e.X;
+            _mouseMovePoint.Y = e.Y;
             PosSizableRect r = _fineTuningRect.GetNodeSelectable(new Point(e.X, e.Y), _luPonit, _rbPonit);
-
             if (_image == null) return;
             if (!_mIsClick && _treatmentType!= TreatmentType.Zoom)
             {
-                Cursor = _fineTuningRect.GetCursor(r);
-                if (r != PosSizableRect.None)
-                    SetFineTuring();
-                else
-                    SetDraw();
-                return;
+                if (_treatmentType != TreatmentType.DrawPolygon)
+                {
+                    Cursor = _fineTuningRect.GetCursor(r);
+                    if (r != PosSizableRect.None)
+                    {
+                        if (_treatmentType != TreatmentType.FineTuring)
+                        {
+                            SetFineTuring();
+                            return;
+                        }
+                    }
+                    else if (_treatmentType != TreatmentType.DrawRect)
+                    {
+                        SetDraw();
+                        return;
+                    }
+                }
             }
             if(_mIsClick)
             {
+                _isMouseMove = true;
                 switch (_treatmentType)
                 {
                     case TreatmentType.Zoom:
                         ZoomMouseMove(e);
-                        break;
-                    case TreatmentType.Draw:
+                        return;
+                    case TreatmentType.DrawRect:
                         DrawMouseMove(e);
-                        break;
+                        return;
                     case TreatmentType.FineTuring:
                         FineTuringMouseMove(e);
-                        break;
+                        return;
                 }
             }
+            if(ShowSupLine)
+                Invalidate();
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
@@ -244,7 +410,7 @@ namespace MyControl
                 case TreatmentType.Zoom:
                     ZoomMouseWheel(e);
                     break;
-                case TreatmentType.Draw:
+                case TreatmentType.DrawRect:
                     DrawMouseWheel(e);
                     break;
             }
@@ -257,10 +423,58 @@ namespace MyControl
         #endregion
 
         #region 内部方法
+        private double GetDistance(PointF p1, PointF p2)
+        {
+            return Math.Sqrt(
+               Math.Pow((p1.X - p2.X), 2)
+               + Math.Pow((p1.Y - p2.Y), 2));
+        }
+
+        public bool CheckPointInLine(PointF pf, PointF p2, PointF p1, double range = 6)
+        {
+            double cross = (p2.X - p1.X) * (pf.X - p1.X) + (p2.Y - p1.Y) * (pf.Y - p1.Y);
+            if (cross <= 0) return false;
+            double d2 = (p2.X - p1.X) * (p2.X - p1.X) + (p2.Y - p1.Y) * (p2.Y - p1.Y);
+            if (cross >= d2) return false;
+            double r = cross / d2;
+            double px = p1.X + (p2.X - p1.X) * r;
+            double py = p1.Y + (p2.Y - p1.Y) * r;
+            return Math.Sqrt((pf.X - px) * (pf.X - px) + (py - pf.Y) * (py - pf.Y)) <= range;
+        }
+
+        private int GetSelectedCircleIndexFromPolygon(PointF point)
+        {
+            if (_polygons.Count == 0)
+                return -1;
+            for (int i = 0; i < _polygons.Count; i++)
+            {
+                if (point.X >= _polygons[i].X - _circleRadius &&
+                        point.X <= _polygons[i].X + _circleRadius &&
+                        point.Y >= _polygons[i].Y - _circleRadius &&
+                        point.Y <= _polygons[i].Y + _circleRadius)
+                    return i;
+            }
+            return -1;
+        }
+
+
         private void FitToScreen()
         {
             if (_image != null)
             {
+                //矩形到图片的初始相对距离
+                float _ImageRectLuX = (_luPonit.X - _startPoint.X) / Wrate;
+                float _ImageRectLuY = (_luPonit.Y - _startPoint.Y) / Hrate;
+                float _ImageRectRbX = (_rbPonit.X - _startPoint.X) / Wrate;
+                float _ImageRectRbY = (_rbPonit.Y - _startPoint.Y) / Hrate;
+
+                //多边形相对位置
+                List<PointF> temppolygons = new List<PointF>();
+                foreach (var point in _polygons)
+                {
+                    temppolygons.Add(new PointF((point.X - _startPoint.X) / Wrate, (point.Y - _startPoint.Y) / Hrate));
+                }
+
                 if (BIsStretch)
                 {
                     Hrate = ((float)(Height)) / (_image.Height);
@@ -273,6 +487,20 @@ namespace MyControl
                 float x = (Width - (_image.Width * Wrate)) / 2;
                 float y = (Height - (_image.Height * Hrate)) / 2;
                 _startPoint = new PointF(x, y);
+
+                //还原矩形位置
+                _luPonit.X = _startPoint.X + _ImageRectLuX * Wrate;
+                _luPonit.Y = _startPoint.Y + _ImageRectLuY * Hrate;
+                _rbPonit.X = _startPoint.X + _ImageRectRbX * Wrate;
+                _rbPonit.Y = _startPoint.Y + _ImageRectRbY * Hrate;
+
+                //还原多边形
+                for (int i = 0; i < _polygons.Count; i++)
+                {
+                    _polygons[i] = new PointF(
+                        _startPoint.X + temppolygons[i].X * Wrate,
+                        _startPoint.Y + temppolygons[i].Y * Hrate);
+                }
             }
             Invalidate();
         }
@@ -300,6 +528,10 @@ namespace MyControl
             _luPonit.Y += e.Y - _mouseDownPoint.Y;
             _rbPonit.X += e.X - _mouseDownPoint.X;
             _rbPonit.Y += e.Y - _mouseDownPoint.Y;
+            for (int i = 0; i < _polygons.Count; i++)
+            {
+                _polygons[i] = new PointF(_polygons[i].X + e.X - _mouseDownPoint.X, _polygons[i].Y + e.Y - _mouseDownPoint.Y);
+            }
             _mouseDownPoint = new PointF(e.X, e.Y);
             Invalidate();
         }
@@ -313,6 +545,10 @@ namespace MyControl
 
                 PointF firstLu = new PointF((e.X - _luPonit.X) / Wrate, (e.Y - _luPonit.Y) / Hrate);
                 PointF firstRb = new PointF((e.X - _rbPonit.X) / Wrate, (e.Y - _rbPonit.Y) / Hrate);
+                for (int i = 0; i < _polygons.Count; i++)
+                {
+                    _polygons[i] = new PointF((e.X - _polygons[i].X) / Wrate, (e.Y - _polygons[i].Y) / Hrate);
+                }
                 float rate = 1;
                 if (e.Delta > 0)
                 {
@@ -336,6 +572,10 @@ namespace MyControl
                 _rbPonit.X = e.X - firstRb.X * Wrate;
                 _rbPonit.Y = e.Y - firstRb.Y * Hrate;
                 _startPoint = new PointF(e.X - imageX * Wrate, e.Y - imageY * Hrate);
+                for (int i = 0; i < _polygons.Count; i++)
+                {
+                    _polygons[i] = new PointF(e.X - _polygons[i].X * Wrate, e.Y - _polygons[i].Y * Hrate);
+                }
                 Invalidate();
             }
         }
@@ -404,15 +644,16 @@ namespace MyControl
         {
             if (_image != null)
             {
-                if (BIsStretch)
-                {
-                    Hrate = ((float)(Height)) / (_image.Height);
-                    Wrate = ((float)(Width)) / (_image.Width);
-                }
-                else
-                {
-                    Hrate = Wrate = Math.Min(((float)(Width)) / (_image.Width), ((float)(Height)) / (_image.Height));
-                }
+                //if (BIsStretch)
+                //{
+                //    Hrate = ((float)(Height)) / (_image.Height);
+                //    Wrate = ((float)(Width)) / (_image.Width);
+                //}
+                //else
+                //{
+                //    Hrate = Wrate = Math.Min(((float)(Width)) / (_image.Width), ((float)(Height)) / (_image.Height));
+                //}
+                FitToScreen();
             }
             Invalidate();
         }
@@ -420,14 +661,21 @@ namespace MyControl
         private void SetDraw()
         {
             Cursor = Cursors.Default;
-            _treatmentType = _allawDraw ? TreatmentType.Draw : TreatmentType.Zoom;
+            _treatmentType = AllawDraw ? TreatmentType.DrawRect : TreatmentType.Zoom;
             Invalidate();
         }
 
         private void SetFineTuring()
         {
-            _treatmentType = _allawDraw ? TreatmentType.FineTuring : TreatmentType.Zoom;
+            _treatmentType = AllawDraw ? TreatmentType.FineTuring : TreatmentType.Zoom;
             Invalidate();
+        }
+
+        private void DrawSupLine(PointF crosspoint,Graphics g)
+        {
+            Pen pen = new Pen(SupLineColor, 1) {DashStyle = DashStyle.Dash,DashCap=DashCap.Round,DashPattern=new[]{10F,6F}};
+            g.DrawLine(pen, crosspoint.X, 0, crosspoint.X, Height);
+            g.DrawLine(pen, 0, crosspoint.Y, Width, crosspoint.Y);
         }
         #endregion
 
@@ -437,7 +685,7 @@ namespace MyControl
             return _image;
         }
 
-        public void SetImage(Image bitmap, bool isFirst, bool isDeleteRect = false, int zoom = 1)
+        public void SetImage(Image bitmap, bool isFirst, bool isDeleteRect = false, float zoom = 1, PointF centerpoint = default(PointF))
         {
             if (_image != null)
             {
@@ -451,7 +699,7 @@ namespace MyControl
             _image = (Image)bitmap.Clone();
             if (isFirst)
             {
-                if (_isFirstZoom)
+                if (IsFirstZoom)
                     FitToScreen();
                 else
                 {
@@ -461,9 +709,19 @@ namespace MyControl
                    
                 }
                 SetDraw();
+                _polygons.Clear();
+            }
+            if(centerpoint!= default(PointF))
+            {
+                _startPoint = new PointF(Width / 2 - centerpoint.X * zoom, Height / 2 - centerpoint.Y * zoom);
+                Wrate = Hrate = zoom;
             }
             if (isDeleteRect)
-                ImageRect = new Rectangle(0, 0, 0, 0);
+            {
+                _luPonit = new PointF();
+                _rbPonit = new PointF();
+                ImageRect = Rectangle.Empty;
+            }
             Refresh();
             bitmap.Dispose();
             Invalidate();
@@ -473,15 +731,11 @@ namespace MyControl
         {
             return new Point((int)((_mouseDownPoint.X - _startPoint.X) / Wrate), (int)((_mouseDownPoint.Y - _startPoint.Y) / Hrate));
         }
-        // 进入缩放模式
-        public void SetZoom()
-        {
-            _treatmentType = TreatmentType.Zoom;
-            Invalidate();
-        }
+
+       
         #endregion
 
-        private void recognize_ToolStripMenuItem_Click(object sender, EventArgs e)
+        private void Recognize_ToolStripMenuItem_Click(object sender, EventArgs e)
         {
             if (RecognizeEvent != null)
             {
@@ -500,7 +754,7 @@ namespace MyControl
 
     public class FineTuningRect
     {
-        public PicExControl FatherControl;
+        public Control FatherControl;
         private const int SizeNodeRect = 10;
 
         public Rectangle GetRectByF(RectangleF rectf)
@@ -604,8 +858,9 @@ namespace MyControl
     public enum TreatmentType
     {
         Zoom,
-        Draw,
+        DrawRect,
         FineTuring,
+        DrawPolygon,
         None
     }
 

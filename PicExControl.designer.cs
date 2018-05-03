@@ -46,7 +46,7 @@
             this.recognize_ToolStripMenuItem.Name = "recognize_ToolStripMenuItem";
             this.recognize_ToolStripMenuItem.Size = new System.Drawing.Size(148, 22);
             this.recognize_ToolStripMenuItem.Text = "品牌型号识别";
-            this.recognize_ToolStripMenuItem.Click += new System.EventHandler(this.recognize_ToolStripMenuItem_Click);
+            this.recognize_ToolStripMenuItem.Click += new System.EventHandler(this.Recognize_ToolStripMenuItem_Click);
             // 
             // PicExControl
             // 
@@ -55,7 +55,7 @@
             this.ContextMenuStrip = this.contextMenuStrip1;
             this.Cursor = System.Windows.Forms.Cursors.Default;
             this.Name = "PicExControl";
-            this.Size = new System.Drawing.Size(744, 509);
+            this.Size = new System.Drawing.Size(799, 579);
             this.SizeChanged += new System.EventHandler(this.PicExControl_SizeChanged);
             this.contextMenuStrip1.ResumeLayout(false);
             this.ResumeLayout(false);
